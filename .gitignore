@@ -1,0 +1,11 @@
+.venv/
+.env
+chroma_db_*/
+data/
+test_data/
+temp_uploads/
+__pycache__/
+*.pyc
+.idea/
+.vscode/
+*.iml
