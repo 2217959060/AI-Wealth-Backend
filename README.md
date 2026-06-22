@@ -37,43 +37,7 @@
 
 ## 🗺️ 系统架构图
 
-```mermaid
-graph TD
-    classDef user fill:#e8f0fe,stroke:#4a6fa5,color:#1a2b4a;
-    classDef core fill:#f5f3f0,stroke:#d4c9b8,color:#3a2e1e;
-    classDef agent fill:#e6f2f0,stroke:#4a9b8a,color:#1a3a30;
-    classDef rag fill:#f2efe8,stroke:#b8a88a,color:#4a3a2a;
-    classDef db fill:#e8f0ea,stroke:#7a9a7a,color:#1a3a1a;
-
-    User([用户 / 前端]):::user
-    FastAPI[FastAPI 主服务<br/>Uvicorn + SSE]:::core
-
-    subgraph AppLayer[应用核心层]
-        Router[路由层<br/>Routers]:::core --> Service[服务层<br/>Services]:::core
-        Service --> Agent[AI Agent 调度]:::agent
-        Service --> RAG[RAG 检索引擎]:::rag
-        Service --> Parser[账单解析器]:::core
-    end
-
-    subgraph External[外部依赖]
-        MySQL[(MySQL<br/>财务数据)]:::db
-        Redis[(Redis<br/>短期记忆)]:::db
-        Chroma[(ChromaDB<br/>长期知识库)]:::db
-        Zhipu[智谱 GLM-4<br/>大模型]:::agent
-    end
-
-    User -->|HTTP / SSE| FastAPI
-    FastAPI --> Router
-    FastAPI -.->|WebSocket 进度推送| User
-
-    Agent -->|Function Calling| MySQL
-    Agent -->|读写缓存| Redis
-    RAG -->|向量检索| Chroma
-    Agent -->|API 调用| Zhipu
-    RAG -.->|增强检索| Zhipu
-
-    FastAPI -->|返回流式响应| User
-```
+![系统架构图](./images/architecture.png)
 
 ---
 
