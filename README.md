@@ -1,5 +1,3 @@
-
-```markdown
 # 🧠 AI-Wealth 智能财务管家系统
 
 基于 **FastAPI + GLM-4** 构建的个人全栈财富管理 Agent 系统。集成 **双模态 Agent（理财投顾 + 理赔顾问）**、**两阶段防捏造管道**、**RAG 向量检索**与**长效记忆体系**，真正实现大模型在金融场景下的高可靠工程化落地。
@@ -38,6 +36,7 @@
 ## 🗺️ 系统架构图
 
 ![系统架构图](https://raw.githubusercontent.com/2217959060/AI-Wealth-Backend/main/images/architecture.png)
+
 ---
 
 ## 🚀 快速启动（如何跑起来）
