@@ -37,7 +37,7 @@
 
 ## 🗺️ 系统架构图
 
-![系统架构图](./images/architecture.png)
+![系统架构图](https://github.com/2217959060/AI-Wealth-Backend/raw/main/images/architecture.png)
 
 ---
 
