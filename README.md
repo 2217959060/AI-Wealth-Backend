@@ -118,6 +118,29 @@
    docker-compose down
    ```
 
+### 🪟 Windows 用户专属：一键启动脚本
+
+如果你是 Windows 用户，且希望**全自动启动前端 + 后端**，可以使用项目根目录下的 `start.bat` 脚本：
+
+1. **克隆前端仓库**（与后端放在同一级目录下）：
+   ```bash
+   git clone https://github.com/2217959060/AI-Wealth-Frontend.git
+   ```
+   确保目录结构如下：
+   ```
+   D:\your-project\
+   ├── fastapi-backend-demo\      # 后端仓库（包含 start.bat）
+   └── ai-wealth-frontend\        # 前端仓库（与后端平级）
+   ```
+
+2. **双击运行 `start.bat`**：
+   - 脚本会自动启动后端（Docker Compose）和前端（Vite 开发服务器）
+   - 等待几秒后，浏览器会自动打开 `http://localhost:5173`
+
+3. **注册账号并登录**，开始体验AI Wealth功能。
+
+> 💡 **停止服务**：前端按 `Ctrl+C` 停止，后端执行 `docker-compose down` 停止容器。
+
 ### 环境变量说明
 
 | 变量名 | 说明 | 是否必填 | 示例 |
