@@ -68,6 +68,86 @@
 
 ---
 
+## 🐳 Docker 一键部署（推荐）
+
+> 这是给面试官/使用者最快捷的体验方式：**一行命令跑通全套服务**。
+
+### 前置条件
+
+- 安装 [Docker Desktop](https://www.docker.com/products/docker-desktop/)（Windows/Mac）或 Docker Engine（Linux）
+- 确保 Docker Compose 已安装（新版 Docker Desktop 自带）
+
+### 快速启动
+
+1. **克隆仓库并进入目录**
+
+   ```bash
+   git clone https://github.com/你的用户名/AI-Wealth-Backend.git
+   cd AI-Wealth-Backend
+   ```
+
+2. **配置环境变量**
+
+   在项目根目录创建 `.env` 文件（参考 `.env.example`），填入：
+
+   ```env
+   ZHIPUAI_API_KEY=你的智谱API密钥
+   JWT_SECRET_KEY=你的JWT密钥（建议32位以上随机字符串）
+   ```
+
+3. **一键启动所有服务**
+
+   ```bash
+   docker-compose up -d
+   ```
+
+   该命令会自动拉取并启动：
+   - MySQL 8.0（数据库）
+   - Redis 7.0（会话缓存）
+   - AI-Wealth 后端服务（你的 Docker Hub 镜像）
+
+4. **验证服务**
+
+   访问 API 文档： [http://localhost:8000/docs](http://localhost:8000/docs)
+
+   注册新用户 → 登录获取 Token → 体验 AI 记账与财务分析。
+
+5. **停止服务**
+
+   ```bash
+   docker-compose down
+   ```
+
+### 环境变量说明
+
+| 变量名 | 说明 | 是否必填 | 示例 |
+|--------|------|----------|------|
+| `ZHIPUAI_API_KEY` | 智谱 AI 的 API Key | ✅ 必填 | `abc123...` |
+| `JWT_SECRET_KEY` | JWT 加密密钥 | ⚠️ 建议修改 | `your-secret-key` |
+| `DATABASE_URL` | MySQL 连接串（Compose 已注入） | 无需手动设置 | — |
+| `REDIS_HOST` | Redis 主机地址（Compose 已注入） | 无需手动设置 | — |
+| `ALLOW_ORIGINS` | 前端跨域白名单 | 可选 | `http://localhost:3000` |
+
+### 仅运行后端镜像（不推荐）
+
+> 如果已经本地启动了 MySQL 和 Redis，也可以单独运行镜像：
+
+```bash
+docker run -d -p 8000:8000 \
+  -e ZHIPUAI_API_KEY=你的密钥 \
+  -e JWT_SECRET_KEY=你的密钥 \
+  -e DATABASE_URL=mysql+pymysql://root:123456@host.docker.internal:3306/my_bill_db \
+  -e REDIS_HOST=host.docker.internal \
+  --name ai-wealth-backend \
+  lossn/ai-wealth-backend:latest
+```
+
+> ⚠️ 注意：此方式仅适用于 Windows/Mac 的 Docker Desktop（`host.docker.internal` 可解析），Linux 用户请改用 `--network host` 或推荐使用 `docker-compose`。
+
+> ⚠️ 该命令中的数据库密码 123456 是项目默认配置。如需修改密码，请同步修改 docker-compose.yml 和 database.py 中的对应值。
+
+---
+
 ## 📁 项目目录结构
 
 ```

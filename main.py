@@ -83,7 +83,8 @@ except Exception as e:
 # ===================== 🚀 升级：引入 Redis 接管全局会话记忆 =====================
 # 初始化 Redis 客户端 (确保你本地的 Redis 已启动)
 # 强制使用 protocol=2 协议，完美兼容 Windows 下的 Redis 5.0
-redis_client = redis.Redis(host='127.0.0.1', port=6379, db=0, decode_responses=True, protocol=2)
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+redis_client = redis.Redis(host=REDIS_HOST, port=6379, db=0, decode_responses=True, protocol=2)
 
 # 备用内存方案：如果 Redis 没启动，就暂时存在这里，保证应用不崩溃
 fallback_memory = {}
@@ -1024,7 +1025,7 @@ def ai_financial_advisor(req: AIChatRequest, user_id: int = Depends(get_current_
                 if chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     full_reply += content
-                    yield f"data: {json.dumps({'text': content})}\n\n"
+                    yield f"data: {json.dumps({'text': content}, ensure_ascii=False)}\n\n"
 
             # 🌟 3. 升级：流式输出结束后，将 AI 回复合并，同步存入 Redis
             history_messages.append({"role": "assistant", "content": full_reply})
@@ -1152,7 +1153,7 @@ def ai_claims_advisor(req: AIChatRequest, user_id: int = Depends(get_current_use
                 if chunk.choices[0].delta.content:
                     content = chunk.choices[0].delta.content
                     full_reply += content
-                    yield f"data: {json.dumps({'text': content})}\n\n"
+                    yield f"data: {json.dumps({'text': content}, ensure_ascii=False)}\n\n"
 
             # 🌟 3. 流式输出结束后，将 AI 回复存入 Redis
             history_messages.append({"role": "assistant", "content": full_reply})

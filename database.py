@@ -1,9 +1,13 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base
 from sqlalchemy.orm import sessionmaker
+import os
 
-# 数据库连接网址格式：mysql+pymysql://用户名:密码@主机地址:端口/数据库名
-SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:123456@127.0.0.1:3306/my_bill_db?charset=utf8mb4"
+# 从环境变量读取，如果没有则用默认值（兼容本地开发）
+SQLALCHEMY_DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "mysql+pymysql://root:123456@localhost:3306/my_bill_db?charset=utf8mb4"
+)
 
 # 创建发动机
 engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=False)  # echo=True 可以让你在终端看到它翻译的 SQL 语句，现在先关掉保持清爽

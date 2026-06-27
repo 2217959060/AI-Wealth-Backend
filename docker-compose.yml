@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # ========== MySQL 数据库 ==========
+  mysql:
+    image: mysql:8.0
+    container_name: ai-wealth-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: my_bill_db
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p123456"]
+      timeout: 10s
+      retries: 5
+    networks:
+      - ai-wealth-network
+
+  # ========== Redis 缓存 ==========
+  redis:
+    image: redis:7.0-alpine
+    container_name: ai-wealth-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai-wealth-network
+
+  # ========== 后端服务（你的 Docker Hub 镜像） ==========
+  backend:
+    image: lossn/ai-wealth-backend:latest
+    container_name: ai-wealth-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # ===== 以下为必填环境变量 =====
+      - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}        # 从宿主 .env 读取
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-default-dev-key}  # 建议在 .env 设置
+      # ===== 以下覆盖容器内默认连接地址（容器内用服务名访问） =====
+      - DATABASE_URL=mysql+pymysql://root:123456@mysql:3306/my_bill_db?charset=utf8mb4
+      - REDIS_HOST=redis
+      # ===== 可选：前端跨域配置 =====
+      - ALLOW_ORIGINS=http://localhost:3000,https://your-frontend.vercel.app
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ai-wealth-network
+
+# ========== 持久化卷 ==========
+volumes:
+  mysql_data:
+
+# ========== 网络 ==========
+networks:
+  ai-wealth-network:
+    driver: bridge
