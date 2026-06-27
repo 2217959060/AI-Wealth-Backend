@@ -128,23 +128,27 @@
 | `REDIS_HOST` | Redis 主机地址（Compose 已注入） | 无需手动设置 | — |
 | `ALLOW_ORIGINS` | 前端跨域白名单 | 可选 | `http://localhost:3000` |
 
-### 仅运行后端镜像（不推荐）
+### 备选方案：仅运行后端镜像（需外部依赖）
 
-> 如果已经本地启动了 MySQL 和 Redis，也可以单独运行镜像：
+> 如果你已经**本地安装好了 MySQL 和 Redis**，不想用 Docker Compose 拉起全套服务，也可以单独运行后端镜像。
 
 ```bash
+# 1. 拉取镜像
+docker pull lossn/ai-wealth-backend:latest
+
+# 2. 运行容器（必须传入数据库和 Redis 地址）
 docker run -d -p 8000:8000 \
-  -e ZHIPUAI_API_KEY=你的密钥 \
-  -e JWT_SECRET_KEY=你的密钥 \
+  -e ZHIPUAI_API_KEY=你的智谱API密钥 \
+  -e JWT_SECRET_KEY=你的JWT密钥 \
   -e DATABASE_URL=mysql+pymysql://root:123456@host.docker.internal:3306/my_bill_db \
   -e REDIS_HOST=host.docker.internal \
   --name ai-wealth-backend \
   lossn/ai-wealth-backend:latest
 ```
 
-> ⚠️ 注意：此方式仅适用于 Windows/Mac 的 Docker Desktop（`host.docker.internal` 可解析），Linux 用户请改用 `--network host` 或推荐使用 `docker-compose`。
-
-> ⚠️ 该命令中的数据库密码 123456 是项目默认配置。如需修改密码，请同步修改 docker-compose.yml 和 database.py 中的对应值。
+> ⚠️ **注意**：  
+> - 该命令中的数据库密码 `123456` 是项目默认配置，请根据你本地的 MySQL 密码自行修改。  
+> - `host.docker.internal` 仅适用于 Windows/Mac 的 Docker Desktop，Linux 用户请改用 `--network host` 或直接使用上面的 `docker-compose` 方案。
 
 ---
 
