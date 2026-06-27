@@ -46,7 +46,7 @@ services:
     environment:
       # ===== 以下为必填环境变量 =====
       - ZHIPUAI_API_KEY=${ZHIPUAI_API_KEY}        # 从宿主 .env 读取
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-default-dev-key}  # 建议在 .env 设置
+      - JWT_SECRET_KEY=DOCKER_SECRET_KEY_2026   # 👈 改成和本地默认不一样的值
       # ===== 以下覆盖容器内默认连接地址（容器内用服务名访问） =====
       - DATABASE_URL=mysql+pymysql://root:123456@mysql:3306/my_bill_db?charset=utf8mb4
       - REDIS_HOST=redis
