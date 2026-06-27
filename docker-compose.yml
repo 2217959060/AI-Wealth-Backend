@@ -37,6 +37,7 @@ services:
 
   # ========== 后端服务（你的 Docker Hub 镜像） ==========
   backend:
+    build: .                    # 👈 新增这一行，告诉 Compose 从当前目录的 Dockerfile 构建
     image: lossn/ai-wealth-backend:latest
     container_name: ai-wealth-backend
     restart: unless-stopped
