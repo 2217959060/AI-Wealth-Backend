@@ -33,7 +33,7 @@ def build_insurance_vector_db(pdf_path: str, db_persist_dir: str):
     valid_docs = []
     for doc in raw_docs:
         cleaned_text = doc.page_content
-        # 1. 剔除所有肉眼不可见的幽灵控制字符 (PDF 的万恶之源)
+        # 1. 剔除所有肉眼不可见的幽灵控制字符 
         cleaned_text = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', cleaned_text)
         # 2. 将多个连续的空格或换行替换为一个空格
         cleaned_text = re.sub(r'\s+', ' ', cleaned_text)

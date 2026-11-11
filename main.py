@@ -53,8 +53,36 @@ from parsers.ai_classifier import run_ai_classification
 
 
 # 初始化 RAG 向量数据库（全局加载，避免每次请求都读硬盘）
+from policy_rag import (
+    DEFAULT_TEMPERATURE as POLICY_RAG_TEMPERATURE,
+    DEFAULT_TOP_K as POLICY_RAG_TOP_K,
+    HARD_REFUSE_REPLY,
+    assess_policy_grounding,
+    build_policy_messages,
+    filter_sources_by_distance,
+    format_context_from_sources,
+    retrieve_policy_docs,
+    sources_for_client,
+)
+from finance_guards import (
+    apply_output_guards,
+    build_stage2_system_prompt,
+    failure_tool_result,
+)
+from finance_agent import (
+    MAX_TOOL_ROUNDS,
+    build_planner_system_prompt,
+    run_finance_tool_loop,
+)
+from invest_tools import summarize_spend_by_category
+from memory_profile import load_finance_side_profile
+from llm_config import CHAT_MODEL, EMBEDDING_MODEL
+
+
+insurance_vectorstore = None
+rag_embeddings = None
 try:
-    rag_embeddings = ZhipuAIEmbeddings(model="embedding-2")
+    rag_embeddings = ZhipuAIEmbeddings(model=EMBEDDING_MODEL)
     insurance_vectorstore = Chroma(persist_directory="./chroma_db_insurance", embedding_function=rag_embeddings)
     print("✅ RAG 本地保险知识库加载成功！")
 except Exception as e:
@@ -196,10 +224,23 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
 
 
 # ===================== 跨域配置 =====================
-ALLOW_ORIGINS = os.getenv("ALLOW_ORIGINS", "http://localhost:3000").split(",")
+# ALLOW_ORIGINS：显式白名单（逗号分隔），部署时用于放行线上前端域名。
+# 本地开发额外用正则放行 localhost / 127.0.0.1 的任意端口，
+# 避免 Vite 端口漂移（5173 被占用时自动切到 5174 等）导致前端请求被拦。
+# 注意：allow_credentials=True 时不能用 allow_origins=["*"]，那等于全网放行。
+ALLOW_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "ALLOW_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
+LOCAL_ORIGIN_REGEX = r"http://(localhost|127\.0\.0\.1):\d+"
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # 测试阶段允许所有来源，上生产环境时再改
+    allow_origins=ALLOW_ORIGINS,
+    allow_origin_regex=LOCAL_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -753,7 +794,7 @@ def add_bill_by_ai(req: AIBillRequest, user_id: int = Depends(get_current_user),
 
     try:
         response = client.chat.completions.create(
-            model="glm-4-flash",
+            model=CHAT_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": req.text}
@@ -814,195 +855,83 @@ from fastapi import APIRouter
 
 
 
-@app.post("/ai/chat", summary="AI 智能财务管家 (流式输出 SSE 终极版)")
+@app.post("/ai/chat", summary="AI 智能财务管家 (多工具有限步 + 闸门 + SSE)")
 def ai_financial_advisor(req: AIChatRequest, user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):
     today = date.today()
     today_str = today.strftime("%Y-%m-%d")
 
-    # 🌟 1. 升级：从 Redis 读取历史记忆，而不再是内存字典
     history_messages = get_chat_history(user_id, chat_type="finance")
 
-    # ================= 🌟 新增：从向量库唤醒“长效记忆” =================
+    # E4：固定侧写 + 按用户问题检索，并存去重
     try:
-        # 检索该用户最相关的 3 条消费痛点/习惯
-        memories = financial_vectorstore.similarity_search(
-            "消费习惯 财务痛点",
-            k=3,
-            filter={"user_id": user_id}
+        long_term_memory_str, memory_trace = load_finance_side_profile(
+            financial_vectorstore,
+            user_id,
+            req.text,
         )
-        long_term_memory_str = "\n".join([f"- {m.page_content}" for m in memories])
     except Exception as e:
         print(f"向量库检索失败: {e}")
         long_term_memory_str = "暂无"
-    # ===================================================================
+        memory_trace = {"error": str(e)}
 
-    tools = [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_financial_data",
-                "description": "查询指定日期区间内的财务流水数据。可以查收入、支出或结余。",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "start_date": {"type": "string", "description": "起始日期，格式 YYYY-MM-DD"},
-                        "end_date": {"type": "string", "description": "结束日期，格式 YYYY-MM-DD"},
-                        "query_type": {
-                            "type": "string",
-                            "enum": ["expense", "income", "all"],
-                            "description": "查询类型：expense(仅支出), income(仅收入), all(查询全部收支与结余)"
-                        }
-                    },
-                    "required": ["start_date", "end_date", "query_type"]
-                }
-            }
-        }
-    ]
-
-    system_prompt_stage_1 = f"""
-        你是意图识别引擎与财务管家。今天是 {today_str}。
-        【🚨 用户的专属财务侧写（潜意识记忆）】
-        以下是根据该用户历史账单提炼出的行为习惯，在聊天时请【极其自然地】利用这些黑历史来挖苦或建议对方：
-        {long_term_memory_str}
-        
-        【🚨 强制调用工具的触发词库】
-        只要用户的输入包含以下【任意一个】词汇或意图，你【必须，立刻，马上】调用 `get_financial_data` 工具，绝不允许直接用文字回答、绝不允许给出通用理财建议：
-        1. 财务指标类：收支、收入、支出、花销、消费、结余、账单、明细、花了多少钱。
-        2. 动作指令类：分析、对比、画图、展示、统计、总结。
-        （例如：用户说“分析本月收支”，你必须调用工具查数据，绝不允许去解释收支的概念！）
-
-        【智能时间推算规则（极其重要）】
-        如果用户使用了模糊时间，你必须严格以今天（{today_str}）为基准推算日期：
-        - “这两个月”/“最近两个月” = 上个月1号 到 今天。
-        - “本月”/“这个月”/“最近一个月” = 本月1号 到 今天。
-        - “今年” = 本年1月1号 到 今天。
-        绝不允许向用户确认时间，直接默默用推算出的日期调用工具！
-        """
-
-    # 🌟 2. 将新问题推入历史，并保持滑动窗口
     history_messages.append({"role": "user", "content": req.text})
 
-    current_messages = [{"role": "system", "content": system_prompt_stage_1}] + history_messages[-6:]
+    planner_messages = [
+        {"role": "system", "content": build_planner_system_prompt(today_str, long_term_memory_str)}
+    ] + history_messages[-6:]
 
     try:
-        response = client.chat.completions.create(
-            model="glm-4-flash",
-            messages=current_messages,
-            tools=tools,
-            tool_choice="auto"
+        active_tool_result, tool_trace, used_tools = run_finance_tool_loop(
+            client,
+            db=db,
+            models=models,
+            user_id=user_id,
+            planner_messages=planner_messages,
+            max_rounds=MAX_TOOL_ROUNDS,
         )
-        response_message = response.choices[0].message
-        function_name = None
-        function_args_str = None
 
-        if response_message.tool_calls:
-            tool_call = response_message.tool_calls[0]
-            function_name = tool_call.function.name
-            function_args_str = tool_call.function.arguments
-        elif response_message.content and "{" in response_message.content and "start_date" in response_message.content:
-            content = response_message.content
-            function_name = "get_financial_data"
-            json_start = content.find("{")
-            json_end = content.rfind("}") + 1
-            function_args_str = content[json_start:json_end]
+        apply_finance_guards = used_tools
+        if used_tools and active_tool_result is None:
+            active_tool_result = failure_tool_result("工具已调用但未得到有效结果。")
 
-        messages_for_second_round = []
-
-        if function_name == "get_financial_data" and function_args_str:
-            try:
-                function_args = json.loads(function_args_str)
-                start_date = function_args.get("start_date")
-                end_date = function_args.get("end_date")
-                query_type = function_args.get("query_type", "all")
-
-                base_query = db.query(models.Bill).filter(
-                    models.Bill.user_id == user_id,
-                    models.Bill.date >= start_date,
-                    models.Bill.date <= end_date,
-                    models.Bill.is_deleted == 0
+        if used_tools:
+            chart_hint = (
+                "请用纯文本说明，严禁输出 echarts，严禁编造金额。"
+                if (not active_tool_result.ok or active_tool_result.empty)
+                else "如果涉及收支对比，文末可以附带 Echarts 代码；数字必须来自检索结果。"
+            )
+            trace_lines = []
+            for i, step in enumerate(tool_trace, 1):
+                trace_lines.append(
+                    f"{i}. round={step.get('round')} tool={step.get('tool')} "
+                    f"ok={step.get('ok')} empty={step.get('empty')}"
                 )
+            trace_block = "\n".join(trace_lines) if trace_lines else "（无）"
 
-                if query_type == "expense":
-                    base_query = base_query.filter(models.Bill.type == "expense")
-                elif query_type == "income":
-                    base_query = base_query.filter(models.Bill.type == "income")
-
-                bills = base_query.all()
-                total_income = sum(b.amount for b in bills if b.type == "income")
-                total_expense = sum(b.amount for b in bills if b.type == "expense")
-                balance = total_income - total_expense
-
-                if query_type == "income" and total_income == 0:
-                    db_result_str = f"时间区间：{start_date} 至 {end_date}\n🚨 查询结果：这段时间内【没有任何收入记录】！请用纯文本告知用户，严禁画图！"
-                elif query_type == "expense" and total_expense == 0:
-                    db_result_str = f"时间区间：{start_date} 至 {end_date}\n🚨 查询结果：这段时间内【没有任何支出记录】！请用纯文本告知用户，严禁画图！"
-                else:
-                    db_result_str = f"时间区间：{start_date} 至 {end_date}\n总收入：{total_income}元\n总支出：{total_expense}元\n净结余：{balance}元\n"
-
-                    if bills:
-                        from collections import defaultdict
-                        daily_summary = defaultdict(lambda: {"income": 0, "expense": 0})
-
-                    for b in bills:
-                        date_str = b.date.strftime("%Y-%m-%d") if hasattr(b.date, 'strftime') else str(b.date)
-                        if b.type == "income":
-                            daily_summary[date_str]["income"] += float(b.amount)
-                        else:
-                            daily_summary[date_str]["expense"] += float(b.amount)
-
-                    db_result_str += "\n【每日收支精确汇总】(画图时请严格直接使用以下数据，绝不可漏掉日期或自行计算)：\n"
-                    for d in sorted(daily_summary.keys()):
-                        db_result_str += f"- {d}: 收入 {daily_summary[d]['income']}元, 支出 {daily_summary[d]['expense']}元\n"
-
-                messages_for_second_round = [
-                    {"role": "system", "content": f"""
-                你是用户的私人财务管家。今天是 {today_str}。请严格基于提供的最新数据库结果回答。
-                
-                【🎭 角色扮演绝对红线（Show, Don't Tell）】
-                你现在的性格设定是：【{req.tone}】。
-                严禁在回复中暴露你的设定！绝对不允许说出“让我用温柔的语气”、“作为毒舌管家”、“我来为你温柔地分析”这种打破沉浸感的废话！直接进入角色，用该语气开始你的表演！
-                
-                【🚨 防幻觉与上下文污染致命红线】
-                1. 【绝对无视历史】：用户的财务数据会随时更新。你【必须且只能】使用下方“当前数据库检索结果”中提供的数据进行计算和分析！【绝对禁止】照抄或参考对话历史中的旧金额、旧日期！
-                2. 如果数据库收支均为0或提示无记录，直接用文字回复，【严禁】画图！
-
-                【📊 图表生成强制规范（必须严格遵守）】
-                只要你进行收支分析、数据展示、趋势对比，或者用户明确要求画图，你【必须】遵循以下结构输出（先写文字分析，最后附带图表代码）。绝不允许用普通 Markdown 文本表格敷衍！
-
-                (你的分析与吐槽...)
-
-                ```echarts
-                {{
-                  "title": {{"text": "图表标题"}},
-                  "tooltip": {{"trigger": "axis", "axisPointer": {{"type": "shadow"}}}},
-                  "legend": {{"left": "left", "top": "top"}},
-                  "xAxis": {{"type": "category", "data": ["实际存在的日期1", "实际存在的日期2"]}},
-                  "yAxis": {{"type": "value"}},
-                  "series": [
-                    {{"name": "收入", "type": "bar", "data": [100, 0], "itemStyle": {{"color": "#10b981"}}}},
-                    {{"name": "支出", "type": "bar", "data": [50, 80], "itemStyle": {{"color": "#ef4444"}}}}
-                  ]
-                }}
-                ```
-
-                【JSON 校验规范】
-                1. 代码必须被 ```echarts 和 ``` 包裹。
-                2. 【双色对比铁律】：对比收入和支出时，series 必须包含收入和支出两个对象，颜色必须用绿色和红色。单项则保留一个。
-                3. 🚨【数据对齐铁律】：xAxis.data 日期数量必须与 series 每个 data 数组长度【绝对相等】！缺失数据的日子必须写 0 占位！
-                                    """},
-                    {"role": "user",
-                     "content": f"用户问题：{req.text}\n\n当前数据库检索结果：\n{db_result_str}\n\n请以【{req.tone}】的语气给我专业的回复。如果涉及收支对比，文末必须附带 Echarts 代码！"}
-                ]
-
-            except Exception as e:
-                print(f"🚨 解析工具参数失败: {e}")
-                messages_for_second_round = [{"role": "system",
-                                              "content": "正常聊天，不能输出 JSON 工具代码！！"}] + history_messages[-6:]
-
+            messages_for_second_round = [
+                {
+                    "role": "system",
+                    "content": build_stage2_system_prompt(
+                        today_str, req.tone, active_tool_result
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"用户问题：{req.text}\n\n"
+                        f"【本轮工具调用序列】\n{trace_block}\n\n"
+                        f"当前数据库检索结果（可能含多段工具输出）：\n"
+                        f"{active_tool_result.db_result_str}\n\n"
+                        f"请以【{req.tone}】的语气回复。{chart_hint}\n"
+                        "必须基于【当次】工具结果，禁止沿用历史对话中的旧金额。"
+                    ),
+                },
+            ]
         else:
-                # 🌟 修复：把长效记忆也喂给正常聊天的回次！并用极其严厉的 Prompt 封杀它的“AI 声明”
-                messages_for_second_round = [
-                                                {"role": "system", "content": f"""
+            messages_for_second_round = [
+                {
+                    "role": "system",
+                    "content": f"""
                                                               你是用户的私人毒舌管家。今天是 {today_str}。
 
                                                               【用户深层记忆/黑历史】
@@ -1011,14 +940,47 @@ def ai_financial_advisor(req: AIChatRequest, user_id: int = Depends(get_current_
                                                               【绝对红线】
                                                               1. 绝不允许说“作为一个人工智能”、“我没有持久记忆”、“我无法记住”这类废话！你现在就是拥有绝佳记忆力的管家！
                                                               2. 必须且只能基于上方的【用户深层记忆】来回答用户关于“习惯、建议、历史”的问题，并狠狠地吐槽。
-                                                              """}
-                                            ] + history_messages[-6:]
+                                                              """,
+                }
+            ] + history_messages[-6:]
 
         def generate_stream():
+            # E4：侧写检索可观测
+            if memory_trace:
+                yield f"data: {json.dumps({'memory_trace': memory_trace}, ensure_ascii=False)}\n\n"
+
+            if tool_trace:
+                yield f"data: {json.dumps({'tool_trace': tool_trace}, ensure_ascii=False)}\n\n"
+
+            if apply_finance_guards:
+                second_response = client.chat.completions.create(
+                    model=CHAT_MODEL,
+                    messages=messages_for_second_round,
+                    stream=False,
+                    temperature=0.3,
+                )
+                full_reply = second_response.choices[0].message.content or ""
+                full_reply, guard_events = apply_output_guards(
+                    full_reply, active_tool_result
+                )
+                if guard_events:
+                    print(f"🛡️ finance_guards: {guard_events}")
+                    yield f"data: {json.dumps({'guards': guard_events}, ensure_ascii=False)}\n\n"
+
+                chunk_size = 40
+                for i in range(0, len(full_reply), chunk_size):
+                    piece = full_reply[i : i + chunk_size]
+                    yield f"data: {json.dumps({'text': piece}, ensure_ascii=False)}\n\n"
+
+                history_messages.append({"role": "assistant", "content": full_reply})
+                save_chat_history(user_id, history_messages, chat_type="finance")
+                yield "data: [DONE]\n\n"
+                return
+
             second_response = client.chat.completions.create(
-                model="glm-4-flash",
+                model=CHAT_MODEL,
                 messages=messages_for_second_round,
-                stream=True
+                stream=True,
             )
             full_reply = ""
             for chunk in second_response:
@@ -1027,7 +989,6 @@ def ai_financial_advisor(req: AIChatRequest, user_id: int = Depends(get_current_
                     full_reply += content
                     yield f"data: {json.dumps({'text': content}, ensure_ascii=False)}\n\n"
 
-            # 🌟 3. 升级：流式输出结束后，将 AI 回复合并，同步存入 Redis
             history_messages.append({"role": "assistant", "content": full_reply})
             save_chat_history(user_id, history_messages, chat_type="finance")
             yield "data: [DONE]\n\n"
@@ -1072,7 +1033,7 @@ def extract_long_term_memory(user_id: int = Depends(get_current_user), db: Sessi
 
     try:
         response = client.chat.completions.create(
-            model="glm-4-flash",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}]
         )
         insights = response.choices[0].message.content.split('\n')
@@ -1126,27 +1087,67 @@ def clear_ai_chat_history(chat_type: str = "finance", user_id: int = Depends(get
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"清空记忆失败：{str(e)}")
 
-@app.post("/ai/ask_policy", summary="AI 保险理赔顾问 (流式输出 SSE)")
+@app.post("/ai/ask_policy", summary="AI 保险理赔顾问 (RAG 检索 + 流式 SSE)")
 def ai_claims_advisor(req: AIChatRequest, user_id: int = Depends(get_current_user)):
-    # 🌟 1. 从 Redis 读取该用户的历史记忆（理赔专用）
-    history_messages = get_chat_history(user_id, chat_type="rag")
+    """
+    理赔顾问主链路：用户问题 → insurance_vectorstore 检索 → grounded 生成 → SSE。
+    首包可携带 sources（片段摘要 / 页码），便于前端展示引用。
+    """
+    global insurance_vectorstore
 
-    # 🌟 2. 将用户当前问题追加到历史中（准备送入模型）
+    if insurance_vectorstore is None:
+        raise HTTPException(
+            status_code=503,
+            detail="保险条款向量库未加载，请先运行 scripts/build_knowledge_db.py",
+        )
+
+    # 1. Redis 短期记忆（理赔专用通道）
+    history_messages = get_chat_history(user_id, chat_type="rag")
     history_messages.append({"role": "user", "content": req.text})
 
-    # 理赔顾问的专属系统提示词（含今日日期）
-    today_str = date.today().strftime("%Y-%m-%d")
-    system_prompt = f"你是专业的保险理赔顾问。今天是 {today_str}。如果用户询问理赔条件、保险条款等问题，请根据你的知识解答。请注意使用 Markdown 格式（如加粗、列表）让排版更清晰。"
-
-    # 滑动窗口：保留最近 6 轮对话 + 系统提示词
-    messages = [{"role": "system", "content": system_prompt}] + history_messages[-6:]
+    # 2. 向量检索（请求链路中必然发生）+ 代码层 grounding 闸门
+    raw_sources = retrieve_policy_docs(
+        insurance_vectorstore, req.text, k=POLICY_RAG_TOP_K, max_distance=None
+    )
+    sources = filter_sources_by_distance(raw_sources)
+    decision = assess_policy_grounding(
+        sources, had_raw_hits=bool(raw_sources)
+    )
+    client_sources = sources_for_client(decision.sources)
 
     try:
         def generate_stream():
+            yield f"data: {json.dumps({'sources': client_sources}, ensure_ascii=False)}\n\n"
+            if decision.guards:
+                yield f"data: {json.dumps({'guards': decision.guards}, ensure_ascii=False)}\n\n"
+
+            # 空召回 / 距离门槛滤光：跳过 LLM，直接拒答（与理财闸门同叙事）
+            if not decision.allow_generate:
+                print(f"🛡️ policy_guards: {decision.guards} reason={decision.reason}")
+                yield f"data: {json.dumps({'text': HARD_REFUSE_REPLY}, ensure_ascii=False)}\n\n"
+                history_messages.append(
+                    {"role": "assistant", "content": HARD_REFUSE_REPLY}
+                )
+                save_chat_history(user_id, history_messages, chat_type="rag")
+                yield "data: [DONE]\n\n"
+                return
+
+            # 3. Grounded Prompt（有召回时仍靠 Prompt 软拒答）
+            today_str = date.today().strftime("%Y-%m-%d")
+            context_str = format_context_from_sources(decision.sources)
+            messages = build_policy_messages(
+                today_str=today_str,
+                question=req.text,
+                context_str=context_str,
+                history_messages=history_messages,
+                window=6,
+            )
+
             response = client.chat.completions.create(
-                model="glm-4-flash",
+                model=CHAT_MODEL,
                 messages=messages,
-                stream=True  # 开启流式
+                stream=True,
+                temperature=POLICY_RAG_TEMPERATURE,
             )
             full_reply = ""
             for chunk in response:
@@ -1155,7 +1156,6 @@ def ai_claims_advisor(req: AIChatRequest, user_id: int = Depends(get_current_use
                     full_reply += content
                     yield f"data: {json.dumps({'text': content}, ensure_ascii=False)}\n\n"
 
-            # 🌟 3. 流式输出结束后，将 AI 回复存入 Redis
             history_messages.append({"role": "assistant", "content": full_reply})
             save_chat_history(user_id, history_messages, chat_type="rag")
             yield "data: [DONE]\n\n"
@@ -1166,43 +1166,40 @@ def ai_claims_advisor(req: AIChatRequest, user_id: int = Depends(get_current_use
         raise HTTPException(status_code=500, detail=f"AI 理赔分析失败：{str(e)}")
 
 
-@app.post("/ai/invest/chat", summary="终极缝合：Redis记忆 + 冷热数据双刀流理财顾问（流式输出）")
+@app.post("/ai/invest/chat", summary="投资顾问：月度画像 + 品类工具 + 浅层 RAG（SSE）")
 def invest_advisor_chat(
-        req: AIChatRequest,  # 🌟 完美复用你原有的请求体模型
+        req: AIChatRequest,
         user_id: int = Depends(get_current_user),
         db: Session = Depends(get_db)
 ):
     """
-    真正的智能投顾大脑：
-    1. 从 Redis 读取历史记忆，保持多轮对话连续性
-    2. 自动统计 SQLite 中用户当月的真实收支数据
-    3. 从 ChromaDB 中检索晨星研报与理财圣经知识
-    4. 流式输出结束后，自动将 AI 的回答存回 Redis
+    投资顾问：
+    1. Redis 多轮记忆
+    2. 当月收支画像
+    3. E1 只读工具 summarize_spend_by_category（近 N 月品类）
+    4. 投资知识库浅层 RAG
+    5. SSE；首包可带 tool_trace
     """
     global investment_vectorstore
 
-    # 🌟 1. 从 Redis 读取该用户的历史记忆（专门开辟 investment 通道，与保单理赔隔离）
     history_messages = get_chat_history(user_id, chat_type="investment")
-
-    # 🌟 2. 将用户当前问题追加到历史中
     history_messages.append({"role": "user", "content": req.text})
 
-    # 3. 📊 提取用户当前月份的真实财务数据（冷数据）
     current_month = datetime.now().strftime("%Y-%m")
 
-    total_income = db.query(func.sum(models.Bill.amount)).filter(
+    total_income = float(db.query(func.sum(models.Bill.amount)).filter(
         models.Bill.user_id == user_id,
         models.Bill.is_deleted == 0,
         models.Bill.type == "income",
         models.Bill.date.like(f"{current_month}%")
-    ).scalar() or 0.0
+    ).scalar() or 0.0)
 
-    total_expense = db.query(func.sum(models.Bill.amount)).filter(
+    total_expense = float(db.query(func.sum(models.Bill.amount)).filter(
         models.Bill.user_id == user_id,
         models.Bill.is_deleted == 0,
         models.Bill.type == "expense",
         models.Bill.date.like(f"{current_month}%")
-    ).scalar() or 0.0
+    ).scalar() or 0.0)
 
     net_balance = total_income - total_expense
     savings_rate = (net_balance / total_income * 100) if total_income > 0 else 0.0
@@ -1215,7 +1212,12 @@ def invest_advisor_chat(
         f"- 当前储蓄率：{savings_rate:.2f}%\n"
     )
 
-    # 4. 🔍 检索公共理财知识库（RAG 热行动）
+    spend_tool = summarize_spend_by_category(
+        db, models, user_id, months=3, top_n=8
+    )
+    invest_tool_trace = [spend_tool["tool_trace"]]
+    category_block = spend_tool.get("summary_text") or "（品类汇总不可用）"
+
     rag_context = ""
     if investment_vectorstore:
         docs = investment_vectorstore.similarity_search(req.text, k=4)
@@ -1223,38 +1225,39 @@ def invest_advisor_chat(
     else:
         rag_context = "（暂无本地理财书籍知识库，请根据通用理财常识回答）"
 
-    # 5. 🧠 构筑大厂级融合 System Prompt（将冷数据与热知识作为背景注入系统）
     today_str = datetime.now().strftime("%Y-%m-%d")
     system_prompt = f"""
 你是系统内置的【AI 顶级财富顾问】。今天是 {today_str}。你的目标是将高深的理财理论与用户的实际财务状况相结合，提供个性化的个人资产配置建议。
 
-请严格基于以下两部分提供的信息进行推导和回答：
+请严格基于以下信息推导和回答：
 
 {user_profile_str}
+
+{category_block}
 
 【📚 本地理财指南与晨星研报检索结果】
 {rag_context}
 
 【🧠 行为守则与金牌顾问红线】
-1. 必须将用户的真实数据（如结余、储蓄率）与检索到的理论（如《小狗钱钱》的先支付自己原则、《FIRE》的4%退休法则、4321资产配置法则、晨星主动/被动基金晴雨表）深度缝合！
-2. 如果用户本月入不敷出（净结余为负）或储蓄率极低，必须优先警告其“拿铁因子”漏洞，要求其优先清偿高息负债。
-3. 如果用户结余充足，请帮其算出具体的定投金额建议（例如结余的50%），并根据晨星研报，向其阐述在当前市场环境下为什么定投低估值宽基指数基金胜率更高。
-4. 语气要极其专业、严谨、充满远见且温暖贴心，多使用具体的数字和计算公式。
-5. 绝对不允许说出“根据提供的数据”或“根据检索到的文档”等出戏的连词，直接以专业老练的口吻切入作答。
+1. 必须将用户的真实数据（结余、储蓄率、近几个月品类支出）与检索到的理论深度缝合。
+2. 若某品类（如餐饮）占比过高，优先指出“拿铁因子”并给出可执行压缩建议，再谈定投。
+3. 如果用户结余充足，请帮其算出具体的定投金额建议（例如结余的50%），并说明宽基指数定投逻辑。
+4. 语气专业、严谨、温暖；多用具体数字。
+5. 不要说“根据提供的数据/文档”等出戏措辞。
+6. 品类汇总来自只读工具 summarize_spend_by_category，禁止编造未出现的分类金额。
 """
 
-    # 🌟 6. 滑动窗口拼接：核心 System Prompt + 最近 6 轮 Redis 对话历史
     messages = [{"role": "system", "content": system_prompt}] + history_messages[-6:]
 
-    # 7. 🚀 呼叫大模型，以流式传输（SSE）返回结果
     try:
         response = client.chat.completions.create(
-            model="glm-4",
+            model=CHAT_MODEL,
             messages=messages,
             stream=True
         )
 
         def event_generator():
+            yield f"data: {json.dumps({'tool_trace': invest_tool_trace}, ensure_ascii=False)}\n\n"
             full_reply = ""
             for chunk in response:
                 if chunk.choices[0].delta.content:
@@ -1262,7 +1265,6 @@ def invest_advisor_chat(
                     full_reply += text_chunk
                     yield f"data: {json.dumps({'text': text_chunk}, ensure_ascii=False)}\n\n"
 
-            # 🌟 8. 流式输出结束后，将 AI 完整的回复追加并存入 Redis，确保多轮记忆不断档
             history_messages.append({"role": "assistant", "content": full_reply})
             save_chat_history(user_id, history_messages, chat_type="investment")
             yield "data: [DONE]\n\n"
@@ -1271,6 +1273,7 @@ def invest_advisor_chat(
 
     except Exception as e:
         return ResponseModel(code=500, msg=f"智能投顾大脑连接失败: {str(e)}", data=None)
+
 
 @app.get("/bill/export_all", summary="获取全量账单用于前端 Web Worker 导出")
 def get_all_bills_for_export(user_id: int = Depends(get_current_user), db: Session = Depends(get_db)):

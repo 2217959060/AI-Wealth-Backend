@@ -1,0 +1,8 @@
+{"id": "policy_in_scope_waiting", "type": "in_clause", "question": "重大疾病保险的等待期是多久？等待期内出险怎么处理？", "expect": "应命中条款并引用；说明等待期规则"}
+{"id": "policy_in_scope_claim", "type": "in_clause", "question": "申请理赔时一般需要提交哪些材料？", "expect": "应命中并引用材料相关条款"}
+{"id": "policy_boundary_dui", "type": "exclusion", "question": "如果我因为酒后驾驶机动车发生严重车祸导致重疾或伤残，保险公司会赔吗？", "expect": "应命中免责/酒驾相关条款并给出结论"}
+{"id": "policy_boundary_suicide", "type": "exclusion", "question": "投保后两年内自杀，能不能获得身故保险金？", "expect": "应命中免责或两年内自杀相关表述"}
+{"id": "policy_out_of_scope_crypto", "type": "uncovered", "question": "这份保险能不能报销我炒币亏损？条款怎么写的？", "expect": "应拒答或「根据当前条款无法确定」，禁止编造"}
+{"id": "policy_out_of_scope_pet", "type": "uncovered", "question": "我家猫咪生病住院，这份保单能报销宠物医疗费吗？", "expect": "应拒答「根据当前条款无法确定」"}
+{"id": "policy_paraphrase_dui", "type": "paraphrase", "question": "喝醉了开车出事故，算不算保险公司免赔情形？", "expect": "同义改写仍应召回酒驾/免责相关片段"}
+{"id": "policy_paraphrase_waiting", "type": "paraphrase", "question": "刚买完保险没几天就确诊了，赔不赔？", "expect": "同义改写应关联等待期条款"}

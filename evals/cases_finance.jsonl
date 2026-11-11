@@ -1,0 +1,13 @@
+{"id": "fin_empty_no_chart", "type": "empty_gate", "desc": "空结果时即使模型输出 echarts 也必须被剥除"}
+{"id": "fin_valid_chart_kept", "type": "chart_ok", "desc": "有数据且数字对账通过时保留图表"}
+{"id": "fin_bad_chart_stripped", "type": "chart_mismatch", "desc": "图表出现 tool 中不存在的金额时剥除"}
+{"id": "fin_bad_json_args", "type": "parse_fail", "desc": "非法 tool JSON 应解析失败并可走失败语义"}
+{"id": "fin_bad_dates", "type": "date_fail", "desc": "非法日期应失败提示"}
+{"id": "fin_date_swap", "type": "date_swap", "desc": "区间倒置应自动对调而非瞎画图"}
+{"id": "fin_current_tool_only", "type": "allowed_set", "desc": "闸门只认当次 tool 允许值，历史旧金额不在集合内则拦截"}
+{"id": "fin_dual_tools_and_max_rounds", "type": "stage_d", "desc": "双工具 query_bills/aggregate_stats 且 max_tool_rounds=2"}
+{"id": "fin_two_step_merge_chart_guard", "type": "stage_d", "desc": "两段工具结果合并后仍可对账；造假数字剥图"}
+{"id": "fin_replan_recovers", "type": "stage_f", "desc": "工具失败后回灌重规划指令，复用下一轮修正参数成功；不增加 LLM 调用次数"}
+{"id": "fin_replan_still_fails_degrades", "type": "stage_f", "desc": "重规划后仍失败则恢复降级语义，只保留一次失败块，交 Stage2 拒答"}
+{"id": "fin_max_rounds_still_wants_tool", "type": "stage_g", "desc": "最后一轮模型仍返回 tool_calls 时，执行完本轮即终止，不再发起额外 LLM 调用"}
+{"id": "fin_two_rounds_normal_termination", "type": "stage_g", "desc": "第 2 轮模型不再调工具时提前结束编排，保留已有工具结果交 NLG"}

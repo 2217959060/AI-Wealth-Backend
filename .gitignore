@@ -9,3 +9,16 @@ __pycache__/
 .idea/
 .vscode/
 *.iml
+
+# 面试复习文档（本地保留，不上传 GitHub）
+reviewdocs/
+review.md
+改进计划-技术性与完整性.md
+AI开发实习生_技术面拷打清单.pdf
+
+# 评测产物：运行时自动生成，运行命令见 README
+evals/reports/*
+!evals/reports/.gitkeep
+
+# 本地冒烟脚本，不入库
+scripts/smoke_chat_model.py

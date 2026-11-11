@@ -5,6 +5,8 @@ import json
 import time
 from openai import OpenAI
 
+from llm_config import CHAT_MODEL
+
 # 初始化大模型客户端
 client = OpenAI(
     api_key=os.getenv("ZHIPUAI_API_KEY"),
@@ -41,7 +43,7 @@ def classify_batch_bills(bills_batch):
 
     try:
         response = client.chat.completions.create(
-            model="glm-4-flash",
+            model=CHAT_MODEL,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"}
         )

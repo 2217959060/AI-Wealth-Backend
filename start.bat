@@ -12,7 +12,7 @@ set "FRONTEND_DIR=%BACKEND_DIR%..\ai-wealth-frontend"
 echo [1/3] 启动后端...
 cd /d "%BACKEND_DIR%"
 docker-compose down
-docker-compose up -d
+docker-compose up -d --build
 
 echo [2/3] 启动前端...
 cd /d "%FRONTEND_DIR%"
